@@ -1,0 +1,59 @@
+#reference:https://fanjingbo.com/pytorch/center-loss的pytorch实现/
+
+import torch
+import torch.nn as nn
+from torch.autograd import Variable, Function
+import numpy
+
+class CenterLoss(nn.Module):
+    def __init__(self, num_classes, feat_dim, loss_weight = 0.01):
+        super(CenterLoss, self).__init__()
+        self.num_classes = num_classes
+        self.feat_dim = feat_dim
+        self.loss_weight = loss_weight
+        self.centers = nn.Parameter(torch.zeros(num_classes, feat_dim).float())
+        
+    def forward(self, y, feat):
+        hist = Variable(torch.histc(y.cpu().data.float(), bins = self.num_classes, min = 0, max = self.num_classes)).cuda()
+        feat = feat.view(feat.size()[0], -1)
+        centers_pred = self.centers.index_select(0, y.long().cpu()).cuda()
+        diff = feat - centers_pred
+        feat_mean = torch.Tensor().cuda()
+
+        for i in range(self.num_classes):
+            if i not in y.data:
+                feat_mean = torch.cat((feat_mean, torch.zeros(1, self.feat_dim).cuda()), 0)
+            else:
+                feat_mean = torch.cat((feat_mean, (feat.index_select(0, Variable((y.data==i).nonzero().squeeze_(1)))).float().mean(0).data.unsqueeze_(0)), 0)
+
+        centers_grad = Variable((hist / (1 + hist)).data.unsqueeze_(1)) * (self.centers.cuda() - Variable(feat_mean))
+        #loss = self.loss_weight * 1 / 2.0 * diff.pow(2).sum(1).sum()
+        loss_t = self.loss_weight * diff.pow(2).sum(1).sum() / (diff.size(0)*diff.size(1))
+        return loss_t, centers_grad.cpu()
+
+a = torch.from_numpy(numpy.array([0,1,1,2])).cuda()
+
+b = torch.from_numpy(numpy.array([[1,0,-1,1],[0,1,-1,1],[0,-1,1,0],[1,1,1,1]])).float().cuda()
+c = b+1
+b = Variable(b,requires_grad = True)
+
+centerloss = CenterLoss(3,4,0.1)
+
+optimizier = torch.optim.SGD(centerloss.parameters(),lr = 1)
+
+loss,params = centerloss(a,b)
+
+optimizier.zero_grad()
+
+loss.backward()
+
+#清空计算图叶子节点的梯度
+centerloss.zero_grad()
+
+#准备修改centers = nn.Parameters()的值
+centerloss.centers.backward(params)
+
+#更新所有的参数值
+optimizier.step()
+
+print(centerloss.centers)
